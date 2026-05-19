@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 
 const SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbyZpoJd5UqDnSE9B7ltoAi-tPWcpJQN5O82uW4prPeAwFCMMDwN_lw7PcL0jCyHuyEy0w/exec";
+  "https://script.google.com/macros/s/AKfycbzdhd10l78y3BNQdQBgscrCVtxNXVmoPNQPlXR1Eokv3OP0orHIywwHzHIBSVd1nMTi/exec";
 
 const PRESET_SERVICES = [
   "Manicura básica","Pedicura básica","Gel semipermanente",
@@ -484,19 +484,60 @@ function TrackerView({ data, manicurists, names, totals, tips, forms, setForm, a
 
 // ── Resumen View ──────────────────────────────────────────────────────────────
 
+const DAYS_ORDER = ["lun","mar","mié","jue","vie","sáb"];
+const DAY_FULL   = {"lun":"Lunes","mar":"Martes","mié":"Miércoles","jue":"Jueves","vie":"Viernes","sáb":"Sábado"};
+
 function ResumenView({ data, manicurists, names, totals, tips }) {
   const grandTotal  = names.reduce((s,n) => s+totals[n], 0);
   const grandTips   = names.reduce((s,n) => s+tips[n], 0);
   const grandCom    = names.reduce((s,n) => s+(totals[n]*manicurists[n].commission), 0);
 
-  // payment breakdown (all entries)
+  // All entries flat
+  const allEntries = names.flatMap(n => (data.entries[n]||[]).map(e => ({...e, _name:n})));
+
+  // Payment breakdown (all entries)
   const byPayment = {Efectivo:0, Transferencia:0, Tarjeta:0};
-  names.forEach(n => data.entries[n].forEach(e => {
-    byPayment[e.payment||"Efectivo"] += e.amount;
-  }));
+  allEntries.forEach(e => { byPayment[e.payment||"Efectivo"] += e.amount; });
+
+  // ── Daily breakdown ──────────────────────────────────────────────────────────
+  // day key = first 3 chars of e.day (e.g. "lun", "mar")
+  const dayData = {};
+  allEntries.forEach(e => {
+    const dk = (e.day||"").slice(0,3).toLowerCase().replace("mi","mié");
+    if (!dayData[dk]) dayData[dk] = {total:0, tips:0, count:0, payment:{Efectivo:0,Transferencia:0,Tarjeta:0}};
+    dayData[dk].total += e.amount;
+    dayData[dk].tips  += e.tip||0;
+    dayData[dk].count += 1;
+    dayData[dk].payment[e.payment||"Efectivo"] += e.amount;
+  });
+  const activeDays = DAYS_ORDER.filter(d => dayData[d]);
+
+  // ── Ticket promedio por manicurista ─────────────────────────────────────────
+  const ticketByMani = {};
+  names.forEach(n => {
+    const ents = data.entries[n]||[];
+    ticketByMani[n] = ents.length ? totals[n]/ents.length : 0;
+  });
+
+  // ── Ticket promedio por servicio ────────────────────────────────────────────
+  const svcStats = {};
+  allEntries.forEach(e => {
+    if (!svcStats[e.service]) svcStats[e.service] = {total:0,count:0};
+    svcStats[e.service].total += e.amount;
+    svcStats[e.service].count += 1;
+  });
+
+  // ── Ticket promedio por día ──────────────────────────────────────────────────
+  // already computable from dayData
+
+  // ── Ticket promedio semana ───────────────────────────────────────────────────
+  const totalServices = allEntries.length;
+  const ticketSemana  = totalServices ? grandTotal/totalServices : 0;
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:"1.25rem"}}>
+
+      {/* ── KPIs generales ── */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:9}}>
         <MetricCard label="Venta total" value={fmtMXN(grandTotal)}/>
         <MetricCard label="Comisiones" value={fmtMXN(grandCom)}/>
@@ -504,26 +545,127 @@ function ResumenView({ data, manicurists, names, totals, tips }) {
         <MetricCard label="Ganancia neta" value={fmtMXN(grandTotal-grandCom)}/>
       </div>
 
-      {/* Payment method breakdown */}
+      {/* ── Ventas por día ── */}
       <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"14px 16px"}}>
-        <p style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)",margin:"0 0 10px",textTransform:"uppercase",letterSpacing:"0.05em"}}>Ventas por método de pago</p>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:8}}>
-          {Object.entries(byPayment).map(([pm,amt]) => {
-            const icon = pm==="Transferencia"?"ti-transfer":pm==="Tarjeta"?"ti-credit-card":"ti-cash";
-            return (
-              <div key={pm} style={{background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"9px 12px"}}>
-                <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}>
-                  <i className={`ti ${icon}`} style={{fontSize:13,color:"var(--color-text-secondary)"}} aria-hidden="true"/>
-                  <span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{pm}</span>
+        <p style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)",margin:"0 0 12px",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+          Ventas por día
+        </p>
+        {activeDays.length === 0
+          ? <p style={{fontSize:13,color:"var(--color-text-tertiary)",textAlign:"center",padding:"8px 0"}}>Sin registros esta semana</p>
+          : <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {activeDays.map(dk => {
+                const d = dayData[dk];
+                const ticket = d.count ? d.total/d.count : 0;
+                return (
+                  <div key={dk} style={{background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"10px 13px"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                      <span style={{fontSize:13,fontWeight:500,color:"var(--color-text-primary)"}}>{DAY_FULL[dk]||dk}</span>
+                      <span style={{fontSize:15,fontWeight:500,color:"var(--color-text-primary)"}}>{fmtMXN(d.total)}</span>
+                    </div>
+                    <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:5}}>
+                      <span style={{fontSize:11,color:"var(--color-text-secondary)"}}>🧾 {d.count} servicio{d.count!==1?"s":""}</span>
+                      <span style={{fontSize:11,color:"#3B6D11"}}>+{fmtMXN(d.tips)} propinas</span>
+                      <span style={{fontSize:11,color:"var(--color-text-secondary)"}}>Ticket prom. {fmtMXN(ticket)}</span>
+                    </div>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {Object.entries(d.payment).filter(([,v])=>v>0).map(([pm,amt])=>{
+                        const icon = pm==="Transferencia"?"ti-transfer":pm==="Tarjeta"?"ti-credit-card":"ti-cash";
+                        return (
+                          <span key={pm} style={{fontSize:11,background:"var(--color-background-tertiary)",borderRadius:6,padding:"2px 8px",display:"flex",alignItems:"center",gap:3}}>
+                            <i className={`ti ${icon}`} style={{fontSize:10}}/>
+                            {pm} {fmtMXN(amt)}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+              {/* Acumulado semana */}
+              <div style={{background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"10px 13px",border:"0.5px solid var(--color-border-tertiary)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <span style={{fontSize:13,fontWeight:500,color:"var(--color-text-primary)"}}>Total acumulado semana</span>
+                  <span style={{fontSize:16,fontWeight:500,color:"#B5606B"}}>{fmtMXN(grandTotal)}</span>
                 </div>
-                <p style={{fontSize:15,fontWeight:500,margin:0,color:"var(--color-text-primary)"}}>{fmtMXN(amt)}</p>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                  {Object.entries(byPayment).filter(([,v])=>v>0).map(([pm,amt])=>{
+                    const icon = pm==="Transferencia"?"ti-transfer":pm==="Tarjeta"?"ti-credit-card":"ti-cash";
+                    return (
+                      <span key={pm} style={{fontSize:11,color:"var(--color-text-secondary)",display:"flex",alignItems:"center",gap:3}}>
+                        <i className={`ti ${icon}`} style={{fontSize:10}}/>
+                        {pm} {fmtMXN(amt)}
+                      </span>
+                    );
+                  })}
+                </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+        }
       </div>
 
-      {/* Per manicurist */}
+      {/* ── Ticket promedio ── */}
+      <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"14px 16px"}}>
+        <p style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)",margin:"0 0 12px",textTransform:"uppercase",letterSpacing:"0.05em"}}>
+          Ticket promedio
+        </p>
+
+        {/* Por manicurista */}
+        <p style={{fontSize:11,color:"var(--color-text-tertiary)",margin:"0 0 6px",fontWeight:500}}>Por manicurista</p>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:12}}>
+          {names.map(n => (
+            <div key={n} style={{background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"9px 12px",borderLeft:`3px solid ${manicurists[n].color}`}}>
+              <p style={{fontSize:11,color:"var(--color-text-secondary)",margin:"0 0 2px"}}>{n}</p>
+              <p style={{fontSize:15,fontWeight:500,margin:0,color:manicurists[n].color}}>{fmtMXN(ticketByMani[n])}</p>
+              <p style={{fontSize:10,color:"var(--color-text-tertiary)",margin:"2px 0 0"}}>{(data.entries[n]||[]).length} servicios</p>
+            </div>
+          ))}
+          <div style={{background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"9px 12px",borderLeft:"3px solid #B5606B"}}>
+            <p style={{fontSize:11,color:"var(--color-text-secondary)",margin:"0 0 2px"}}>Semana completa</p>
+            <p style={{fontSize:15,fontWeight:500,margin:0,color:"#B5606B"}}>{fmtMXN(ticketSemana)}</p>
+            <p style={{fontSize:10,color:"var(--color-text-tertiary)",margin:"2px 0 0"}}>{totalServices} servicios totales</p>
+          </div>
+        </div>
+
+        {/* Por día */}
+        {activeDays.length > 0 && (
+          <>
+            <p style={{fontSize:11,color:"var(--color-text-tertiary)",margin:"0 0 6px",fontWeight:500}}>Por día</p>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(100px,1fr))",gap:8,marginBottom:12}}>
+              {activeDays.map(dk => {
+                const d = dayData[dk];
+                const ticket = d.count ? d.total/d.count : 0;
+                return (
+                  <div key={dk} style={{background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"9px 12px"}}>
+                    <p style={{fontSize:11,color:"var(--color-text-secondary)",margin:"0 0 2px"}}>{DAY_FULL[dk]||dk}</p>
+                    <p style={{fontSize:14,fontWeight:500,margin:0,color:"var(--color-text-primary)"}}>{fmtMXN(ticket)}</p>
+                    <p style={{fontSize:10,color:"var(--color-text-tertiary)",margin:"2px 0 0"}}>{d.count} servicios</p>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* Por servicio */}
+        {Object.keys(svcStats).length > 0 && (
+          <>
+            <p style={{fontSize:11,color:"var(--color-text-tertiary)",margin:"0 0 6px",fontWeight:500}}>Por servicio</p>
+            <div style={{display:"flex",flexDirection:"column",gap:4}}>
+              {Object.entries(svcStats).sort((a,b)=>(b[1].total/b[1].count)-(a[1].total/a[1].count)).map(([srv,s])=>(
+                <div key={srv} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"4px 0",borderBottom:"0.5px solid var(--color-border-tertiary)"}}>
+                  <span style={{color:"var(--color-text-secondary)"}}>{srv}</span>
+                  <div style={{textAlign:"right"}}>
+                    <span style={{color:"var(--color-text-primary)",fontWeight:500}}>{fmtMXN(s.total/s.count)}</span>
+                    <span style={{color:"var(--color-text-tertiary)",fontSize:10,marginLeft:6}}>({s.count} vez{s.count!==1?"":""})</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ── Por manicurista (detalle) ── */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(270px,1fr))",gap:"1rem"}}>
         {names.map(name => {
           const meta = manicurists[name];
@@ -534,24 +676,20 @@ function ResumenView({ data, manicurists, names, totals, tips }) {
           const entries = data.entries[name]||[];
           const byService = {};
           entries.forEach(e => { byService[e.service]=(byService[e.service]||0)+e.amount; });
-          const entByPayment = {Efectivo:0,Transferencia:0,Tarjeta:0};
-          entries.forEach(e => { entByPayment[e.payment||"Efectivo"]+=(e.amount||0); });
 
           return (
             <div key={name} style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",overflow:"hidden"}}>
               <div style={{background:meta.color,padding:"10px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span style={{fontWeight:500,fontSize:15,color:"#fff"}}>{name}</span>
-                <span style={{fontSize:12,color:"rgba(255,255,255,0.85)"}}>
-                  {reached?"✓ Meta":"Pendiente"}
-                </span>
+                <span style={{fontSize:12,color:"rgba(255,255,255,0.85)"}}>{reached?"✓ Meta":"Pendiente"}</span>
               </div>
               <div style={{padding:"14px 16px"}}>
                 <Row label="Venta total" value={fmtMXN(total)} big/>
                 <Row label={`Comisión (${(meta.commission*100).toFixed(0)}%)`} value={fmtMXN(commission)} accent={meta.color}/>
                 <Row label="Propinas" value={fmtMXN(tip)} accent="#3B6D11"/>
                 <Row label="Servicios" value={entries.length}/>
+                <Row label="Ticket promedio" value={fmtMXN(ticketByMani[name])}/>
                 <Row label={`Meta ${fmtMXN(meta.goal)}`} value={reached?"Alcanzada":"Pendiente"} ok={reached}/>
-
                 {Object.keys(byService).length>0 && (
                   <div style={{marginTop:10}}>
                     <p style={{fontSize:11,color:"var(--color-text-secondary)",margin:"0 0 5px",fontWeight:500,textTransform:"uppercase",letterSpacing:"0.05em"}}>Por servicio</p>
@@ -563,7 +701,6 @@ function ResumenView({ data, manicurists, names, totals, tips }) {
                     ))}
                   </div>
                 )}
-
                 <div style={{marginTop:12,background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",padding:"9px 13px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontSize:13,fontWeight:500,color:"var(--color-text-primary)"}}>Total a pagar</span>
                   <span style={{fontSize:17,fontWeight:500,color:meta.color}}>{fmtMXN(commission)}</span>
